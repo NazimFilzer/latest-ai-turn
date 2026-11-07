@@ -219,4 +219,41 @@ class TurnServiceIdeTest {
         assertEquals(listOf(LineChange(ChangeKind.ADDED, 0, 3)), svc.tracker.turnChanges(moved.toString()))
         assertTrue(svc.tracker.changedPaths().contains(main.toString())) // the old path counts as deleted
     }
+
+    @Test
+    fun `the violet gutter bar is really painted inside the visible gutter`() {
+        runInEdtAndWait { svc.manualStart() }
+        val vf = vfile(main)
+        lateinit var editor: com.intellij.openapi.editor.ex.EditorEx
+        runInEdtAndWait {
+            editor = EditorFactory.getInstance().createEditor(FileDocumentManager.getInstance().getDocument(vf)!!, fixture.project) as com.intellij.openapi.editor.ex.EditorEx
+        }
+        try {
+            agentWrites(main, "l1\nL2\nl3\n")
+            waitFor("bar highlighter") { gutterBars(editor) == 1 }
+            var violet = 0
+            var minX = Int.MAX_VALUE
+            var maxX = -1
+            var width = 0
+            runInEdtAndWait {
+                val gutter = editor.gutterComponentEx
+                width = gutter.preferredSize.width.coerceAtLeast(60)
+                gutter.setSize(width, 200)
+                val img = java.awt.image.BufferedImage(width, 200, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+                val g = img.createGraphics()
+                gutter.paint(g)
+                g.dispose()
+                val target = TurnPaint.GUTTER_COLOR.rgb and 0xFFFFFF
+                fun close(a: Int, b: Int) = Math.abs((a shr 16 and 255) - (b shr 16 and 255)) + Math.abs((a shr 8 and 255) - (b shr 8 and 255)) + Math.abs((a and 255) - (b and 255)) < 40
+                for (x in 0 until width) for (y in 0 until 200) {
+                    if (close(img.getRGB(x, y) and 0xFFFFFF, target)) { violet++; minX = minOf(minX, x); maxX = maxOf(maxX, x) }
+                }
+            }
+            println("GUTTER_PIXELS violet=$violet x=$minX..$maxX gutterWidth=$width")
+            assertTrue("no violet pixels were painted in the gutter (violet=$violet, width=$width)", violet > 0)
+            assertTrue("bar painted outside the gutter: x=$minX..$maxX width=$width", minX >= 0 && maxX < width)
+        } finally {
+            runInEdtAndWait { EditorFactory.getInstance().releaseEditor(editor) }
+        }
+    }
 }

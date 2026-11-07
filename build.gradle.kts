@@ -35,3 +35,13 @@ intellijPlatform {
         }
     }
 }
+
+// `./gradlew runIde -PdemoProject=/path` opens a sandbox IDE (own config, never your real IntelliJ) on that project.
+tasks.named<JavaExec>("runIde") {
+    providers.gradleProperty("demoProject").orNull?.let { args(it) }
+    jvmArgs(
+        "-Didea.trust.all.projects=true",
+        "-Dide.show.tips.on.startup.default.value=false",
+        "-Djb.consents.confirmation.enabled=false",
+    )
+}
