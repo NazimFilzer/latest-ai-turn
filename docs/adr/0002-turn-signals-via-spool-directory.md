@@ -1,0 +1,5 @@
+# Turn Signals reach the IDE through a spool directory, attributed by time
+
+Agent hooks (Claude Code, Codex, Antigravity) run a tiny POSIX `sh` script that drops the raw hook payload as one file into `~/.latest-ai-turn/spool/`; the plugin watches that directory. We rejected a synchronous HTTP hook into the IDE's built-in server (needs port discovery, only works while the IDE runs, and the convenient REST route can raise a trust dialog) and tailing agent transcript files (undocumented formats).
+
+Because the spool is asynchronous, an agent's first write can be seen before its Turn Start Signal. Attribution therefore uses time, not per-file tool claims: every External Change whose modification time is at or after Turn Start, until Turn End, belongs to the Latest Turn. This deliberately includes edits made through shell commands, formatters and code generators the agent runs, at the cost of not separating two agents working at once (the user works with one agent at a time; a newer Turn Start simply wins).

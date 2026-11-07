@@ -1,0 +1,47 @@
+<idea-plugin>
+  <id>dev.latestaiturn</id>
+  <name>Latest AI Turn</name>
+  <vendor>latest-ai-turn</vendor>
+  <description><![CDATA[
+    Highlights, in the normal editor, only what the most recent AI coding turn changed. Independent of Git:
+    your uncommitted work and your own typing are never highlighted. Turns start and end through hooks
+    (Claude Code, Codex, Antigravity) or manual actions.
+  ]]></description>
+
+  <depends>com.intellij.modules.platform</depends>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <postStartupActivity implementation="dev.latestaiturn.ide.Startup"/>
+    <statusBarWidgetFactory id="LatestAiTurn.Status" implementation="dev.latestaiturn.ide.StatusWidgetFactory"/>
+    <notificationGroup id="Latest AI Turn" displayType="BALLOON"/>
+  </extensions>
+
+  <actions>
+    <group id="LatestAiTurn.Group" text="Latest AI Turn" popup="true">
+      <add-to-group group-id="ToolsMenu" anchor="last"/>
+      <action id="LatestAiTurn.Start" class="dev.latestaiturn.ide.StartTurnAction" text="Start Turn"
+              description="Begin a turn: changes on disk from now on are highlighted">
+        <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift T"/>
+      </action>
+      <action id="LatestAiTurn.End" class="dev.latestaiturn.ide.EndTurnAction" text="End Turn"
+              description="End the turn; its highlights stay until the next turn starts">
+        <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift E"/>
+      </action>
+      <action id="LatestAiTurn.Rebaseline" class="dev.latestaiturn.ide.RebaselineAction" text="Re-baseline"
+              description="Absorb everything: current contents become the baseline"/>
+      <separator/>
+      <action id="LatestAiTurn.ShowDiff" class="dev.latestaiturn.ide.ShowTurnDiffAction" text="Show Latest Turn Diff"
+              description="Before/after diff of every file the latest turn changed">
+        <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift D"/>
+      </action>
+      <action id="LatestAiTurn.ToggleHighlights" class="dev.latestaiturn.ide.ToggleHighlightsAction" text="Show Latest Turn Highlights"/>
+      <action id="LatestAiTurn.ToggleBackground" class="dev.latestaiturn.ide.ToggleBackgroundAction" text="Highlight Changed Lines Background"/>
+      <separator/>
+      <action id="LatestAiTurn.InstallHooks" class="dev.latestaiturn.ide.InstallHooksAction" text="Install Agent Hooks…"/>
+      <action id="LatestAiTurn.UninstallHooks" class="dev.latestaiturn.ide.UninstallHooksAction" text="Uninstall Agent Hooks…"/>
+    </group>
+    <action id="LatestAiTurn.ShowFileDiff" class="dev.latestaiturn.ide.ShowFileTurnDiffAction" text="Show Latest Turn Diff for This File">
+      <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+    </action>
+  </actions>
+</idea-plugin>
