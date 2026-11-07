@@ -74,4 +74,16 @@ class HookInstallerTest {
             // expected
         }
     }
+
+    @Test
+    fun `a malformed hooks section is refused, never replaced`() {
+        for (bad in listOf("""{"hooks": "oops"}""", """{"hooks": {"Stop": {"not": "an array"}}}""")) {
+            try {
+                HookInstaller.installClaudeStyle(bad, script, "claude")
+                fail("expected refusal for $bad")
+            } catch (e: IllegalArgumentException) {
+                // expected: add-only means we never overwrite something we do not understand
+            }
+        }
+    }
 }

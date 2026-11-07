@@ -15,6 +15,10 @@ _Avoid_: current turn, last turn
 **Turn Start**:
 The moment a Turn begins; freezes the Baseline that the Turn is measured against.
 
+**Open Turn**:
+The Latest Turn between its Turn Start and Turn End, while External Changes are still being attributed to it. After Turn End there is a Latest Turn (still highlighted) but no Open Turn.
+_Avoid_: active turn, running turn
+
 **Turn End**:
 The moment a Turn stops accepting External Changes; its highlights stay visible until the next Turn Start.
 

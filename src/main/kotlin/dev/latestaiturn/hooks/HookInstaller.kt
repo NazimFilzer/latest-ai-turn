@@ -28,15 +28,17 @@ object HookInstaller {
 
     private fun isOurs(handlerGroup: JsonElement): Boolean =
         handlerGroup.isJsonObject && handlerGroup.asJsonObject["hooks"]?.takeIf { it.isJsonArray }?.asJsonArray
-            ?.any { it.isJsonObject && it.asJsonObject["command"]?.asString?.contains(MARKER) == true } == true
+            ?.any { it.isJsonObject && it.asJsonObject["command"]?.takeIf { c -> c.isJsonPrimitive }?.asString?.contains(MARKER) == true } == true
 
     // ---- Claude Code (~/.claude/settings.json) and Codex (~/.codex/hooks.json): same shape ----
 
     fun installClaudeStyle(existing: String?, script: String, app: String): String {
         val root = parse(existing)
+        require(root["hooks"] == null || root["hooks"].isJsonObject) { "'hooks' in the existing config is not an object; refusing to modify it" }
         val hooks = root.getAsJsonObjectOrCreate("hooks")
         for ((event, kind) in listOf("UserPromptSubmit" to "start", "Stop" to "end")) {
-            val groups = hooks.get(event)?.takeIf { it.isJsonArray }?.asJsonArray ?: JsonArray().also { hooks.add(event, it) }
+            require(hooks[event] == null || hooks[event].isJsonArray) { "'hooks.$event' in the existing config is not a list; refusing to modify it" }
+            val groups = hooks.get(event)?.asJsonArray ?: JsonArray().also { hooks.add(event, it) }
             val kept = JsonArray().also { a -> groups.filterNot(::isOurs).forEach(a::add) }
             val handler = JsonObject().apply {
                 addProperty("type", "command")

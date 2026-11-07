@@ -29,8 +29,11 @@ private class HookTarget(
     val agentPresent: Boolean get() = Files.isDirectory(configFile.parent)
 }
 
+/** True when any agent's config already contains our hooks. */
+fun anyHooksInstalled(): Boolean = targets().any { t -> runCatching { t.isInstalled(t.existing()) }.getOrDefault(false) }
+
 private fun targets(): List<HookTarget> {
-    val home = Paths.home()
+    val home = PluginPaths.home()
     return listOf(
         HookTarget("Claude Code (desktop app, CLI and T3 Code)", home.resolve(".claude/settings.json"),
             { c, s -> HookInstaller.installClaudeStyle(c, s, "claude") }, HookInstaller::uninstallClaudeStyle, HookInstaller::isInstalledClaudeStyle),
@@ -56,7 +59,7 @@ private fun backupAndWrite(target: Path, content: String) {
 class InstallHooksAction : TurnAction() {
     override fun perform(project: Project, e: AnActionEvent) {
         val all = targets()
-        val script = Paths.script().toString()
+        val script = PluginPaths.script().toString()
         val dialog = object : DialogWrapper(project, true) {
             val boxes = all.map { JBCheckBox(it.name, it.agentPresent) }
             val preview = JBTextArea(14, 80).apply { isEditable = false; lineWrap = false }
@@ -92,9 +95,9 @@ class InstallHooksAction : TurnAction() {
         }
         if (!dialog.showAndGet()) return
         try {
-            Files.createDirectories(Paths.dataDir())
-            Files.writeString(Paths.script(), HookScript.TEXT)
-            runCatching { Files.setPosixFilePermissions(Paths.script(), PosixFilePermissions.fromString("rwxr-xr-x")) }
+            Files.createDirectories(PluginPaths.dataDir())
+            Files.writeString(PluginPaths.script(), HookScript.TEXT)
+            runCatching { Files.setPosixFilePermissions(PluginPaths.script(), PosixFilePermissions.fromString("rwxr-xr-x")) }
             val done = ArrayList<String>()
             for (i in all.indices) {
                 if (!dialog.boxes[i].isSelected) continue

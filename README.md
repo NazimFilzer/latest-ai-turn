@@ -18,7 +18,7 @@ Requires IntelliJ IDEA **2026.2 or newer** (build 262+). The plugin is built aga
 # JDK: use the IDE's own JBR (Java 25). Gradle 9.6 wrapper is included.
 export JAVA_HOME="/Applications/IntelliJ IDEA.app/Contents/jbr/Contents/Home"
 
-./gradlew test            # 35 tests: pure model, parser, installer, plus a headless-IDE integration suite
+./gradlew test            # 37 tests: pure model, parser, installer, plus a headless-IDE integration suite
 ./gradlew buildPlugin     # -> build/distributions/latest-ai-turn-0.1.0.zip
 ```
 
@@ -44,7 +44,7 @@ Manual mode alone is complete: press Start, let the agent work, press End.
 
 ### Hook mode (turns start and end by themselves)
 
-**Tools → Latest AI Turn → Install Agent Hooks…** shows exactly what will be added to which file, lets you untick agents, makes a backup of each file it touches (`*.latest-ai-turn.bak`), and **only adds** entries — it never rewrites your existing config, and refuses to touch a file that is not valid JSON. Uninstall removes only our entries.
+**Tools → Latest AI Turn → Install Agent Hooks…** shows exactly what will be added to which file, lets you untick agents, makes a backup of each file it touches (`*.latest-ai-turn.bak`), and **only adds** entries. It refuses to touch a file that is not valid JSON, or whose `hooks` section has an unexpected shape, instead of replacing it. The file is re-serialized (pretty-printed, key order kept), which is why a backup is made first. Uninstall removes only our entries.
 
 | Agent | File | Turn start | Turn end |
 |---|---|---|---|
@@ -59,10 +59,10 @@ Each hook runs `~/.latest-ai-turn/hook.sh`, a small POSIX `sh` script that copie
 * **Baseline, independent of Git.** The plugin keeps its own content-addressed copy of every tracked file in the IDE system directory (never in your project). A turn's highlights are `diff(baseline, current)`. Pre-existing uncommitted work is part of the baseline, so it is never highlighted. ([ADR 0001](docs/adr/0001-git-independent-shadow-baseline.md))
 * **What counts as the turn's change:** every change that *arrives on disk* between Turn Start and Turn End — an agent's edit tool, but also a shell command, formatter or code generator it runs. Attribution is by **time**, not by which tool wrote. ([ADR 0002](docs/adr/0002-turn-signals-via-spool-directory.md))
 * **Your own typing never contaminates it.** Edits through the IDE are folded into the baseline. If you edit a line the agent wrote, only *that line* stops being highlighted; the agent's other lines stay. Renames, deletes, "new file" and refactoring writes done through the IDE are yours too.
-* **Outside a turn,** changes arriving from disk (`git checkout`, a generator, another tool) are absorbed silently, with one quiet notice. They never light up, and they never erase the highlights of an ended turn.
+* **Outside a turn,** changes arriving from disk (`git checkout`, a generator, another tool) are absorbed, with one quiet notice. They never *add* highlights. Lines they overwrite stop being highlighted (they are no longer the agent's text), but the rest of an ended turn's highlights stay.
 * **Late signals are handled.** The hook signal reaches the IDE a moment after the agent starts; a write already seen by then is put back into the turn by its timestamp (modification *or change* time, so an agent's `mv` of an old file counts).
-* **New turn replaces old.** Starting a turn clears the previous highlights. A new Start while one is open ends it implicitly. **Newest start wins** when agents overlap; a `Stop` from a different session is ignored.
-* **Scope:** text files under the project directory, inside IntelliJ content roots, not excluded or VCS-ignored, ≤ 1 MB, not binary, and not under `.git .idea .gradle .vscode node_modules out build dist target .venv __pycache__ .next`.
+* **New turn replaces old.** Starting a turn clears the previous highlights. A new Start while one is open ends it implicitly. **Newest start wins** when agents overlap; a `Stop` from any other session is ignored, and **a manual turn is only ended manually** (or by the next Start), never by an agent's Stop.
+* **Scope:** text files under the project directory, inside IntelliJ content roots, not excluded by the IDE or ignored by VCS, ≤ 1 MB, not binary, and never under `.git .idea .gradle node_modules __pycache__`. Build-output folders are not special-cased: if your build output is neither IDE-excluded nor git-ignored, it will be tracked.
 * **Persistence:** the current turn survives an IDE restart (state in the IDE system dir). Files that changed while the IDE was closed cannot be attributed: they are absorbed with a notice.
 
 ## Verified versus assumed
@@ -115,12 +115,13 @@ Be aware before relying on it:
 
 ## Known limitations and failure modes
 
+* **No continuous "hook is not firing" detection.** The only warning: when files change outside a turn *and* hooks are installed, the absorb notice adds a hint that no turn signal arrived. If an agent's hook silently never fires, nothing is highlighted until you press Start Turn.
 * **Interrupted agents.** If an agent is interrupted and no `Stop` arrives, the turn stays open until the next prompt or a manual **End Turn**; changes made meanwhile (including by you through other tools) count toward it.
 * **IDE-side agents look like you.** Anything that edits through the IDE's own editor (JetBrains AI, Junie, Copilot in IntelliJ) is treated as your own typing and is never highlighted. On-disk agents only.
-* **Two agents at once:** the newest Start wins; the older agent's later writes are *not* highlighted as a second turn. In manual mode every disk change during the turn counts.
+* **Two agents at once:** the newest Start wins; the older agent's later writes are *not* highlighted as a second turn. Antigravity's `PreInvocation` (sent on every model call) also takes over an open turn of a *different* session, so overlapping Antigravity and Claude/Codex work can flip the turn back and forth. In manual mode every disk change during the turn counts.
 * **Git operations during a turn** (checkout, pull, stash) count toward the turn, because they are indistinguishable from an agent's writes. Use Re-baseline afterwards.
 * **Spool is consumed by the first IDE that polls it;** two IDE instances on the same machine race. Signals are matched to projects by the agent's working directory (inside the project, or a parent that is not your home dir or `/`), so T3 / Codex worktrees outside the project directory are ignored.
-* **Unsaved editor text vs an agent write.** IntelliJ's own behavior applies: a file with unsaved edits that an agent also writes triggers IntelliJ's conflict handling, and an IDE save landing after the agent's write overwrites it. Hook-started turns save all editors first; relying on this is not a guarantee.
+* **Unsaved editor text vs an agent write.** IntelliJ's own behavior applies: a file with unsaved edits that an agent also writes triggers IntelliJ's conflict handling, and an IDE save landing after the agent's write overwrites it. Hook-started turns save all editors *right after* the turn starts (saving cannot happen on the signal path itself), which narrows but does not close that window. Manual Start saves first.
 * **Large file events run on the EDT.** The VFS listener reads and diffs changed files on the UI thread (inside IntelliJ's refresh). A branch switch touching many large files can briefly freeze the UI. Moving this off the EDT would change the ordering between reloads and edits, so it was left as is.
 * **Whole-file rewrites.** The line diff stops searching for a minimal diff after 1500 edits and reports one big region.
 * **Line-based.** A change that only differs in the final newline is not highlighted; line-ending-only changes are normalized away. Highlights while the *first scan* of a brand-new project is running may be missing for files not yet scanned.

@@ -10,10 +10,12 @@ import com.intellij.openapi.vfs.VirtualFile
 object TrackedFiles {
     const val MAX_BYTES = 1_048_576L
 
-    /** Never tracked, wherever they appear in the project: IDE metadata, VCS data, dependency and build output. */
-    private val EXCLUDED_DIRS = setOf(
-        ".git", ".idea", ".gradle", ".vscode", "node_modules", "out", "build", "dist", "target", ".venv", "__pycache__", ".next",
-    )
+    /**
+     * Never tracked, wherever they appear: IDE metadata, VCS data and dependency caches. Build output (`build`, `out`,
+     * `dist`, `target`) is deliberately not listed: a source package may legitimately use those names, and real
+     * output folders are already excluded by the IDE or ignored by VCS, which are checked below.
+     */
+    private val EXCLUDED_DIRS = setOf(".git", ".idea", ".gradle", "node_modules", "__pycache__")
 
     fun isEligible(project: Project, file: VirtualFile): Boolean {
         if (!file.isValid || file.isDirectory || !file.isInLocalFileSystem) return false

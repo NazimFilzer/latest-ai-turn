@@ -24,12 +24,17 @@ class SpoolWatcher {
 
     private fun poll() {
         try {
-            val files = Files.newDirectoryStream(Paths.spoolDir(), "*.json").use { it.toList() }
+            val files = Files.newDirectoryStream(PluginPaths.spoolDir(), "*.json").use { it.toList() }
             if (files.isEmpty()) return
             val ordered = files.map { it to Files.getLastModifiedTime(it).toMillis() }.sortedWith(compareBy({ it.second }, { it.first.fileName.toString() }))
             for ((file, mtime) in ordered) {
-                handle(file, mtime)
-                Files.deleteIfExists(file)
+                try {
+                    handle(file, mtime)
+                } catch (e: Exception) {
+                    log.warn("Latest AI Turn: dropping unreadable spool file ${file.fileName}", e)
+                } finally {
+                    Files.deleteIfExists(file) // a poison file must never block the queue
+                }
             }
         } catch (e: java.nio.file.NoSuchFileException) {
             // no hook has run yet
@@ -51,14 +56,4 @@ class SpoolWatcher {
         private const val STALE_MILLIS = 10 * 60_000L
         fun getInstance(): SpoolWatcher = service()
     }
-}
-
-object Paths {
-    fun home(): Path = Path.of(System.getProperty("user.home"))
-    fun dataDir(): Path = home().resolve(".latest-ai-turn")
-    /** Same override the hook script honors, so tests (and unusual setups) can redirect the spool. */
-    fun spoolDir(): Path =
-        (System.getProperty("latestaiturn.spoolDir") ?: System.getenv("LATEST_AI_TURN_SPOOL"))?.let { Path.of(it) }
-            ?: dataDir().resolve("spool")
-    fun script(): Path = dataDir().resolve("hook.sh")
 }

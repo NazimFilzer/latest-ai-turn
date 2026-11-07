@@ -223,4 +223,16 @@ class TurnTrackerTest {
         assertEquals(listOf(LineChange(ChangeKind.MODIFIED, 1, 1)), tracker.turnChanges("c/y.kt"))
         assertEquals(listOf("c/y.kt"), tracker.changedPaths())
     }
+
+    @Test
+    fun `a manual turn is not ended by some agent's Stop, only by a manual End`() {
+        val tracker = TurnTracker()
+        tracker.startTurn(sessionId = null, atMillis = 1_000)
+
+        assertEquals(false, tracker.endTurn("some-agent"))
+        assertEquals(true, tracker.activeTurn() != null)
+
+        assertEquals(true, tracker.endTurn(null))
+        assertNull(tracker.activeTurn())
+    }
 }

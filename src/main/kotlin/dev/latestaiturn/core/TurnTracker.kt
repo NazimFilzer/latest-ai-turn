@@ -74,11 +74,6 @@ class TurnTracker(private val store: BlobStore = InMemoryBlobStore()) {
     @Synchronized
     fun currentHash(path: String): String? = files[path]?.current
 
-    /**
-     * Freezes the Baseline: every file's current text becomes its baseline, and previous highlights clear.
-     * [atMillis] is when the agent really started; foreign changes already absorbed with a modification time
-     * at or after it are put back into the turn, because the start signal only reached us late.
-     */
     /** Seeds only files we have never seen, so a late scan cannot erase a change already recorded. */
     @Synchronized
     fun seedIfAbsent(path: String, text: String?): Boolean {
@@ -87,6 +82,11 @@ class TurnTracker(private val store: BlobStore = InMemoryBlobStore()) {
         return true
     }
 
+    /**
+     * Freezes the Baseline: every file's current text becomes its baseline, and previous highlights clear.
+     * [atMillis] is when the agent really started; foreign changes already absorbed with a modification time
+     * at or after it are put back into the turn, because the start signal only reached us late.
+     */
     @Synchronized
     fun startTurn(sessionId: String?, atMillis: Long) {
         val revertTo = LinkedHashMap<String, String?>()
@@ -109,7 +109,8 @@ class TurnTracker(private val store: BlobStore = InMemoryBlobStore()) {
     @Synchronized
     fun endTurn(sessionId: String? = null): Boolean {
         val t = turn ?: return false
-        if (sessionId != null && t.sessionId != null && t.sessionId != sessionId) return false
+        // A signal from another session never ends this turn - and neither does any agent's Stop end a manual turn.
+        if (sessionId != null && t.sessionId != sessionId) return false
         turn = null
         return true
     }

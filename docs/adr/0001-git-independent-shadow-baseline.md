@@ -4,5 +4,5 @@ The Baseline is the plugin's own content-addressed copy of every Tracked File, s
 
 ## Consequences
 
-- Seeding costs one full read of the Tracked Files on first open; later opens only re-read files whose size/mtime changed.
+- Seeding costs one full read of the Tracked Files on first open; later opens read them again to compare content hashes against the saved state (no size/mtime shortcut yet).
 - Files that change while the IDE is closed cannot be attributed; they are Absorbed with a warning.

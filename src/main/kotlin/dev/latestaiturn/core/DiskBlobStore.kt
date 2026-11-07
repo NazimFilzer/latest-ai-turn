@@ -21,6 +21,8 @@ class DiskBlobStore(private val dir: Path) : BlobStore {
         },
     )
 
+    private companion object { const val GC_GRACE_MILLIS = 10 * 60_000L }
+
     init { Files.createDirectories(dir) }
 
     private fun file(hash: String): Path = dir.resolve("$hash.txt")
@@ -72,13 +74,14 @@ class DiskBlobStore(private val dir: Path) : BlobStore {
         }
     }
 
-    /** Deletes blobs no file refers to any more. */
+    /** Deletes blobs no file refers to any more. Recently written blobs are kept: they may belong to a newer snapshot. */
     fun gc(referenced: Set<String>) {
+        val cutoff = System.currentTimeMillis() - GC_GRACE_MILLIS
         try {
             Files.newDirectoryStream(dir, "*.txt").use { stream ->
                 for (p in stream) {
                     val hash = p.fileName.toString().removeSuffix(".txt")
-                    if (hash !in referenced && !pending.containsKey(hash)) Files.deleteIfExists(p)
+                    if (hash !in referenced && !pending.containsKey(hash) && Files.getLastModifiedTime(p).toMillis() < cutoff) Files.deleteIfExists(p)
                 }
             }
         } catch (e: Exception) {

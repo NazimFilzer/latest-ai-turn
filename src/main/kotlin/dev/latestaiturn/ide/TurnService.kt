@@ -43,6 +43,7 @@ import dev.latestaiturn.core.DiskBlobStore
 import dev.latestaiturn.core.TrackerSnapshot
 import dev.latestaiturn.core.TurnTracker
 import dev.latestaiturn.core.sha256
+import dev.latestaiturn.signals.SignalKind
 import dev.latestaiturn.signals.TurnSignal
 import dev.latestaiturn.signals.applyTo
 import java.nio.file.Files
@@ -115,14 +116,14 @@ class TurnService(val project: Project) : Disposable {
 
     // ---------- user actions ----------
 
-    /** Manual Turn Start: saves editors first so disk, editor and baseline agree (Q5). */
+    /** Manual Turn Start: saves editors first so disk, editor and baseline agree. */
     fun manualStart() {
         FileDocumentManager.getInstance().saveAllDocuments()
         tracker.startTurn(sessionId = null, atMillis = System.currentTimeMillis())
         turnStateChanged()
     }
 
-    /** Turn End: refresh the project from disk first so the agent's last writes are still counted (Q15). */
+    /** Turn End: refresh the project from disk first so the agent's last writes are still counted. */
     fun manualEnd() = endAfterRefresh(null)
 
     fun rebaseline() {
@@ -135,13 +136,14 @@ class TurnService(val project: Project) : Disposable {
         ApplicationManager.getApplication().invokeLater({
             if (project.isDisposed) return@invokeLater
             when (signal.kind) {
-                dev.latestaiturn.signals.SignalKind.END -> endAfterRefresh(signal.sessionId)
+                SignalKind.END -> endAfterRefresh(signal.sessionId)
                 else -> {
-                    val startsTurn = signal.kind == dev.latestaiturn.signals.SignalKind.START || tracker.activeTurn()?.sessionId != signal.sessionId
+                    val startsTurn = signal.kind == SignalKind.START || tracker.activeTurn()?.sessionId != signal.sessionId
                     // Start first: the tracker is thread-safe and the turn must not wait on anything else.
                     signal.applyTo(tracker)
                     turnStateChanged()
-                    // Saving changes the model, which is not allowed under ModalityState.any(); do it separately (Q5).
+                    // Saving changes the model, which is not allowed under ModalityState.any(); do it separately.
+                    // It runs just after the turn starts, so it narrows but does not close the window for an agent's first write.
                     if (startsTurn) ApplicationManager.getApplication().invokeLater(
                         { FileDocumentManager.getInstance().saveAllDocuments() }, ModalityState.nonModal(),
                     )
@@ -151,11 +153,13 @@ class TurnService(val project: Project) : Disposable {
     }
 
     private fun endAfterRefresh(sessionId: String?) {
+        val ending = tracker.activeTurn() ?: return
         val roots = ProjectRootManager.getInstance(project).contentRoots
         val finish = Runnable {
             ApplicationManager.getApplication().invokeLater({
                 if (project.isDisposed) return@invokeLater
-                if (tracker.endTurn(sessionId)) lastEndMillis = System.currentTimeMillis()
+                // The refresh takes a moment; if the next prompt already started a new turn, leave that one alone.
+                if (tracker.activeTurn() == ending && tracker.endTurn(sessionId)) lastEndMillis = System.currentTimeMillis()
                 turnStateChanged()
             }, ModalityState.any())
         }
@@ -299,7 +303,10 @@ class TurnService(val project: Project) : Disposable {
         notifyAlarm.cancelAllRequests()
         notifyAlarm.addRequest({
             val n = foreignCount; foreignCount = 0
-            if (n > 0) notify("$n file${if (n == 1) "" else "s"} changed outside a turn and ${if (n == 1) "was" else "were"} absorbed into the baseline.")
+            if (n > 0) {
+                val hint = if (anyHooksInstalled()) " Hooks are installed but no turn signal arrived: if an agent was working, its hook may not be firing. Use Start Turn." else ""
+                notify("$n file${if (n == 1) "" else "s"} changed outside a turn and ${if (n == 1) "was" else "were"} absorbed into the baseline.$hint")
+            }
         }, 4_000)
     }
 
