@@ -33,6 +33,7 @@ class TurnServiceIdeTest {
     private lateinit var svc: TurnService
     private lateinit var main: Path
     private lateinit var base: Path
+    private lateinit var other: Path
 
     @Before
     fun setUp() {
@@ -48,6 +49,8 @@ class TurnServiceIdeTest {
         Files.createDirectories(base)
         main = base.resolve("Main.txt")
         Files.writeString(main, "l1\nl2\nl3\n")
+        other = base.resolve("Other.txt")
+        Files.writeString(other, "o1\n")
         runInEdtAndWait { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(main) }
         svc = TurnService.getInstance(fixture.project)
         svc.start()
@@ -184,5 +187,36 @@ class TurnServiceIdeTest {
         assertTrue(entry.baseline != entry.current)
         // blobs for both versions were flushed to disk, so a restart can read them back
         assertTrue(Files.list(svc.stateFile.parent.resolve("blobs")).use { it.count() } >= 2)
+    }
+
+    @Test
+    fun `renames, creates and deletes done through the IDE during a turn are never highlighted`() {
+        runInEdtAndWait { svc.manualStart() }
+        val project = fixture.project
+
+        WriteCommandAction.runWriteCommandAction(project) { vfile(main).rename(this, "Renamed.txt") }
+        WriteCommandAction.runWriteCommandAction(project) {
+            val created = vfile(base).createChildData(this, "New.txt")
+            VfsUtil.saveText(created, "hello\n")
+        }
+        WriteCommandAction.runWriteCommandAction(project) { vfile(other).delete(this) }
+
+        assertEquals(emptyList<String>(), svc.tracker.changedPaths())
+        assertTrue(svc.tracker.isTracked(base.resolve("Renamed.txt").toString()))
+        assertTrue(!svc.tracker.isTracked(main.toString()))
+        assertTrue(svc.tracker.isTracked(base.resolve("New.txt").toString()))
+        assertTrue(!svc.tracker.isTracked(other.toString()))
+    }
+
+    @Test
+    fun `an agent moving an old file into place during a turn is shown as the turn's change`() {
+        runInEdtAndWait { svc.manualStart() }
+        val moved = base.resolve("Moved.txt")
+
+        Files.move(main, moved) // keeps the old modification time; only the change time is new
+        runInEdtAndWait { VfsUtil.markDirtyAndRefresh(false, true, true, vfile(base)) }
+
+        assertEquals(listOf(LineChange(ChangeKind.ADDED, 0, 3)), svc.tracker.turnChanges(moved.toString()))
+        assertTrue(svc.tracker.changedPaths().contains(main.toString())) // the old path counts as deleted
     }
 }

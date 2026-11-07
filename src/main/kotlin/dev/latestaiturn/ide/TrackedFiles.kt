@@ -30,6 +30,18 @@ object TrackedFiles {
         }
     }
 
+    /**
+     * When the file last changed on disk, as late as we can tell: modification time or inode change time. A rename
+     * keeps the modification time but bumps the change time, so a file an agent moves into place is not mistaken
+     * for one that has been sitting there since before the turn.
+     */
+    fun changeTime(file: VirtualFile): Long = try {
+        val ctime = (java.nio.file.Files.getAttribute(java.nio.file.Path.of(file.path), "unix:ctime") as java.nio.file.attribute.FileTime).toMillis()
+        maxOf(file.timeStamp, ctime)
+    } catch (e: Exception) {
+        file.timeStamp
+    }
+
     /** Text with `\n` line endings and no BOM, as the editor's Document would hold it; null if unreadable. */
     fun readText(file: VirtualFile): String? = try {
         LoadTextUtil.loadText(file).toString()

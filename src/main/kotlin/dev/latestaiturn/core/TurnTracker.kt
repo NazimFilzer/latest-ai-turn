@@ -62,6 +62,14 @@ class TurnTracker(private val store: BlobStore = InMemoryBlobStore()) {
     @Synchronized
     fun forget(path: String) { files.remove(path) }
 
+    /** The file (or every file under the folder) [oldPath] was renamed or moved by the IDE: its state follows it. */
+    @Synchronized
+    fun move(oldPath: String, newPath: String) {
+        val moved = files.keys.filter { it == oldPath || it.startsWith("$oldPath/") }
+        val states = moved.map { it to files.remove(it)!! }
+        for ((k, st) in states) files[newPath + k.removePrefix(oldPath)] = st
+    }
+
     /** Content hash of the file's current text, used to detect changes made while the IDE was closed. */
     @Synchronized
     fun currentHash(path: String): String? = files[path]?.current

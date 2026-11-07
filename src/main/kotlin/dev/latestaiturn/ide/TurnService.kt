@@ -136,7 +136,16 @@ class TurnService(val project: Project) : Disposable {
             if (project.isDisposed) return@invokeLater
             when (signal.kind) {
                 dev.latestaiturn.signals.SignalKind.END -> endAfterRefresh(signal.sessionId)
-                else -> { signal.applyTo(tracker); turnStateChanged() }
+                else -> {
+                    val startsTurn = signal.kind == dev.latestaiturn.signals.SignalKind.START || tracker.activeTurn()?.sessionId != signal.sessionId
+                    // Start first: the tracker is thread-safe and the turn must not wait on anything else.
+                    signal.applyTo(tracker)
+                    turnStateChanged()
+                    // Saving changes the model, which is not allowed under ModalityState.any(); do it separately (Q5).
+                    if (startsTurn) ApplicationManager.getApplication().invokeLater(
+                        { FileDocumentManager.getInstance().saveAllDocuments() }, ModalityState.nonModal(),
+                    )
+                }
             }
         }, ModalityState.any())
     }
@@ -191,14 +200,61 @@ class TurnService(val project: Project) : Disposable {
         if (touched) { dirty = true; scheduleRefresh() }
     }
 
+    /**
+     * External = noticed by a refresh of the disk: attributed to the turn. Anything else was done by the IDE itself
+     * (rename, delete, create from a template, refactoring writes): that is the user's own doing and never counts.
+     */
     private fun handleEvent(e: VFileEvent): Boolean = when (e) {
-        is VFileContentChangeEvent -> if (e.isFromRefresh) external(e.file, false) else false
-        is VFileCreateEvent -> e.file?.let { external(it, true) } ?: false
-        is VFileCopyEvent -> e.findCreatedFile()?.let { external(it, true) } ?: false
-        is VFileDeleteEvent -> deleted(e.path)
-        is VFileMoveEvent -> moved(e.oldPath, e.file)
-        is VFilePropertyChangeEvent -> if (e.isRename) moved(e.oldPath, e.file) else false
+        is VFileContentChangeEvent -> when {
+            e.isFromRefresh -> external(e.file, false)
+            e.isFromSave -> false
+            else -> ideWrote(e.file)
+        }
+        is VFileCreateEvent -> e.file?.let { if (e.isFromRefresh) external(it, true) else ideCreated(it) } ?: false
+        is VFileCopyEvent -> e.findCreatedFile()?.let { if (e.isFromRefresh) external(it, true) else ideCreated(it) } ?: false
+        is VFileDeleteEvent -> if (e.isFromRefresh) deleted(e.path) else ideDeleted(e.path)
+        is VFileMoveEvent -> if (e.isFromRefresh) moved(e.oldPath, e.file) else ideMoved(e.oldPath, e.file.path)
+        is VFilePropertyChangeEvent ->
+            if (!e.isRename) false else if (e.isFromRefresh) moved(e.oldPath, e.file) else ideMoved(e.oldPath, e.file.path)
         else -> false
+    }
+
+    /** The IDE wrote a file's content without a refresh and without saving an editor: absorb it as an own edit. */
+    private fun ideWrote(file: VirtualFile): Boolean {
+        if (file.isDirectory || FileDocumentManager.getInstance().getCachedDocument(file) != null) return false // editors report their own edits
+        return absorbFromIde(file)
+    }
+
+    private fun ideCreated(file: VirtualFile): Boolean {
+        if (file.isDirectory) {
+            var any = false
+            com.intellij.openapi.vfs.VfsUtilCore.visitChildrenRecursively(file, object : com.intellij.openapi.vfs.VirtualFileVisitor<Unit>() {
+                override fun visitFile(f: VirtualFile): Boolean { if (!f.isDirectory) any = absorbFromIde(f) || any; return true }
+            })
+            return any
+        }
+        return absorbFromIde(file)
+    }
+
+    private fun absorbFromIde(file: VirtualFile): Boolean {
+        val path = file.path
+        if (!path.startsWith("$basePath/")) return false
+        if (!tracker.isTracked(path) && !TrackedFiles.isEligible(project, file)) return false
+        val text = TrackedFiles.readText(file) ?: return false
+        if (tracker.isTracked(path)) tracker.onOwnEdit(path, text) else tracker.seedIfAbsent(path, text)
+        return true
+    }
+
+    private fun ideDeleted(path: String): Boolean {
+        val gone = tracker.trackedPaths().filter { it == path || it.startsWith("$path/") }
+        gone.forEach(tracker::forget)
+        return gone.isNotEmpty()
+    }
+
+    private fun ideMoved(oldPath: String, newPath: String): Boolean {
+        if (tracker.trackedPaths().none { it == oldPath || it.startsWith("$oldPath/") }) return false
+        tracker.move(oldPath, newPath)
+        return true
     }
 
     private fun external(file: VirtualFile, created: Boolean): Boolean {
@@ -213,7 +269,7 @@ class TurnService(val project: Project) : Disposable {
         if (!path.startsWith("$basePath/")) return false
         if (!tracker.isTracked(path) && !TrackedFiles.isEligible(project, file)) return false
         val text = TrackedFiles.readText(file) ?: return false
-        val mtime = file.timeStamp
+        val mtime = TrackedFiles.changeTime(file)
         if (!tracker.isTracked(path) && !created) { tracker.seedIfAbsent(path, text); return true }
         countForeign(mtime)
         tracker.onExternalChange(path, text, mtime)
@@ -261,11 +317,13 @@ class TurnService(val project: Project) : Disposable {
                 out
             }
             var offline = 0
+            var scanned = 0
             val seen = HashSet<String>(candidates.size * 2)
             for (f in candidates) {
                 if (project.isDisposed) return
                 val path = f.path
                 seen.add(path)
+                if (++scanned % 300 == 0) blobs.flush()
                 val text = TrackedFiles.readText(f) ?: continue
                 if (tracker.isTracked(path)) {
                     if (tracker.currentHash(path) != sha256(text)) { tracker.onOwnEdit(path, text); offline++ }
@@ -305,10 +363,12 @@ class TurnService(val project: Project) : Disposable {
     fun persistNow() {
         dirty = false
         try {
-            blobs.flush()
+            val mark = blobs.mark()
+            val snapshot = tracker.snapshot()
+            blobs.flush(snapshot.files.flatMapTo(HashSet()) { listOfNotNull(it.baseline, it.current) }, mark)
             Files.createDirectories(dir)
             val tmp = dir.resolve("state.json.tmp")
-            Files.writeString(tmp, Gson().toJson(tracker.snapshot()))
+            Files.writeString(tmp, Gson().toJson(snapshot))
             Files.move(tmp, dir.resolve("state.json"), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         } catch (e: Exception) {
             log.warn("Latest AI Turn: could not save state", e)

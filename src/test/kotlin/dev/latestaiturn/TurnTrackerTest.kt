@@ -206,4 +206,21 @@ class TurnTrackerTest {
         assertEquals(true, tracker.seedIfAbsent("b.kt", "x\n"))
         assertEquals(listOf("a.kt"), tracker.changedPaths())
     }
+
+    @Test
+    fun `renaming a file or folder carries its baseline and highlights along`() {
+        val tracker = TurnTracker()
+        tracker.seed("a/x.kt", "l1\nl2\n")
+        tracker.startTurn("s1", t0)
+        tracker.onExternalChange("a/x.kt", "l1\nL2\n", t0 + 1)
+
+        tracker.move("a/x.kt", "b/y.kt")
+        assertEquals(false, tracker.isTracked("a/x.kt"))
+        assertEquals(listOf(LineChange(ChangeKind.MODIFIED, 1, 1)), tracker.turnChanges("b/y.kt"))
+        assertEquals("l1\nl2\n", tracker.baselineText("b/y.kt"))
+
+        tracker.move("b", "c")
+        assertEquals(listOf(LineChange(ChangeKind.MODIFIED, 1, 1)), tracker.turnChanges("c/y.kt"))
+        assertEquals(listOf("c/y.kt"), tracker.changedPaths())
+    }
 }
