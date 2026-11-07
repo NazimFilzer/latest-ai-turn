@@ -67,6 +67,7 @@ class TurnService(val project: Project) : Disposable {
     val stateFile: Path get() = dir.resolve("state.json")
 
     private val started = AtomicBoolean(false)
+    @Volatile private var persistTask: java.util.concurrent.ScheduledFuture<*>? = null
     @Volatile var scanning = true
         private set
     private val reloading: MutableSet<Document> = Collections.newSetFromMap(IdentityHashMap())
@@ -105,12 +106,13 @@ class TurnService(val project: Project) : Disposable {
             override fun editorCreated(event: EditorFactoryEvent) { if (event.editor.project == project) paintEditor(event.editor) }
         }, this)
         SpoolWatcher.getInstance().ensureStarted()
-        AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay({ persistIfDirty() }, 5, 5, TimeUnit.SECONDS)
+        persistTask = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay({ persistIfDirty() }, 5, 5, TimeUnit.SECONDS)
         ApplicationManager.getApplication().executeOnPooledThread { reconcile() }
         scheduleRefresh()
     }
 
     override fun dispose() {
+        persistTask?.cancel(false) // a closed project must not keep this service alive
         persistNow()
     }
 
