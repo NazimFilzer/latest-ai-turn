@@ -235,4 +235,73 @@ class TurnTrackerTest {
         assertEquals(true, tracker.endTurn(null))
         assertNull(tracker.activeTurn())
     }
+
+    @Test
+    fun `typing on the line right after an agent deletion edits that line in the baseline, not the deleted one`() {
+        val tracker = trackerWithAgentEdit("A\nB\nC\nD\n", "A\nC\nD\n") // the agent deleted B
+
+        tracker.onOwnEdit("a.kt", "A\nC2\nD\n")
+
+        assertEquals("A\nB\nC2\nD\n", tracker.baselineText("a.kt"))
+        assertEquals(listOf(LineChange(ChangeKind.DELETED, 1, 0)), tracker.turnChanges("a.kt"))
+    }
+
+    @Test
+    fun `deleting the line right after an agent deletion keeps the agent's deletion in the baseline`() {
+        val tracker = trackerWithAgentEdit("A\nB\nC\nD\n", "A\nC\nD\n")
+
+        tracker.onOwnEdit("a.kt", "A\nD\n")
+
+        assertEquals("A\nB\nD\n", tracker.baselineText("a.kt"))
+    }
+
+    @Test
+    fun `deleting everything after the agent deleted the first lines leaves only the agent's deletion in the baseline`() {
+        val tracker = trackerWithAgentEdit("A\nB\nC\n", "C\n")
+
+        tracker.onOwnEdit("a.kt", "")
+
+        assertEquals("A\nB", tracker.baselineText("a.kt")) // linesOf ignores the final newline
+    }
+
+    @Test
+    fun `deleting a block that covers an agent line and an untouched line only blames the agent for its own line`() {
+        val tracker = trackerWithAgentEdit("A\nB\nC\n", "A\nB2\nC\n")
+
+        tracker.onOwnEdit("a.kt", "A\n") // the user deleted B2 and C
+
+        assertEquals("A\nB\n", tracker.baselineText("a.kt")) // C was the user's deletion, so it left the baseline
+    }
+
+    @Test
+    fun `replacing a block that covers an agent line and an untouched line moves the untouched part into the baseline`() {
+        val tracker = trackerWithAgentEdit("A\nB\nC\nD\n", "A\nB2\nC\nD\n")
+
+        tracker.onOwnEdit("a.kt", "A\nX\nD\n") // the user replaced B2 and C with X
+
+        assertEquals("A\nB\nX\nD\n", tracker.baselineText("a.kt"))
+    }
+
+    @Test
+    fun `turn changes follow every change of baseline, text and ownership`() {
+        val tracker = trackerWithAgentEdit("l1\nl2\nl3\n", "l1\nL2\nL3\n")
+        assertEquals(listOf(LineChange(ChangeKind.MODIFIED, 1, 2)), tracker.turnChanges("a.kt"))
+
+        tracker.onOwnEdit("a.kt", "l1\nX\nL3\n")
+        assertEquals(listOf(LineChange(ChangeKind.MODIFIED, 2, 1)), tracker.turnChanges("a.kt"))
+
+        tracker.onExternalChange("a.kt", "l1\nX\nL3\nmore\n", t0 + 20)
+        assertEquals(listOf(LineChange(ChangeKind.MODIFIED, 2, 2)), tracker.turnChanges("a.kt")) // X stays owned
+
+        tracker.rebaseline()
+        assertEquals(emptyList<LineChange>(), tracker.turnChanges("a.kt"))
+    }
+
+    @Test
+    fun `paths under a path include the path itself and its children but not look-alike siblings`() {
+        val tracker = TurnTracker()
+        for (p in listOf("a", "a/x.kt", "a/b/y.kt", "ab/z.kt")) tracker.seed(p, "1\n")
+
+        assertEquals(setOf("a", "a/x.kt", "a/b/y.kt"), tracker.pathsUnder("a").toSet())
+    }
 }

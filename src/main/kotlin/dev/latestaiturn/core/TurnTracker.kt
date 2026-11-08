@@ -19,7 +19,12 @@ class TurnTracker(private val store: BlobStore = InMemoryBlobStore()) {
     private companion object { const val JOURNAL_WINDOW_MILLIS = 30_000L }
 
     /** `owned` = lines (in current-text coordinates) the user wrote or rewrote inside an agent hunk. */
-    private class FileState(var baseline: String?, var current: String?, var owned: Set<Int> = emptySet())
+    private class FileState(var baseline: String?, var current: String?, var owned: Set<Int> = emptySet()) {
+        /** The last [turnChanges] answer and the inputs it was computed from; reused while none of them changed. */
+        var cache: CachedChanges? = null
+    }
+
+    private class CachedChanges(val baseline: String?, val current: String?, val owned: Set<Int>, val changes: List<LineChange>)
 
     private val files = LinkedHashMap<String, FileState>()
     private var turn: ActiveTurn? = null
@@ -65,10 +70,14 @@ class TurnTracker(private val store: BlobStore = InMemoryBlobStore()) {
     /** The file (or every file under the folder) [oldPath] was renamed or moved by the IDE: its state follows it. */
     @Synchronized
     fun move(oldPath: String, newPath: String) {
-        val moved = files.keys.filter { it == oldPath || it.startsWith("$oldPath/") }
+        val moved = pathsUnder(oldPath)
         val states = moved.map { it to files.remove(it)!! }
         for ((k, st) in states) files[newPath + k.removePrefix(oldPath)] = st
     }
+
+    /** [path] itself and every tracked path below it (when it is a folder). */
+    @Synchronized
+    fun pathsUnder(path: String): List<String> = files.keys.filter { it == path || it.startsWith("$path/") }
 
     /** Content hash of the file's current text, used to detect changes made while the IDE was closed. */
     @Synchronized
@@ -137,8 +146,10 @@ class TurnTracker(private val store: BlobStore = InMemoryBlobStore()) {
             journal.add(Absorbed(path, prev, state.current, modifiedAtMillis))
             return
         }
-        val old = state.current?.let(store::get) ?: ""
-        state.owned = remap(state.owned, LineDiff.hunks(linesOf(old), linesOf(text ?: "")))
+        if (state.owned.isNotEmpty()) { // only owned line numbers need to follow the change; skip reading and diffing otherwise
+            val old = state.current?.let(store::get) ?: ""
+            state.owned = remap(state.owned, LineDiff.hunks(linesOf(old), linesOf(text ?: "")))
+        }
         state.current = text?.let(store::put)
     }
 
@@ -167,15 +178,28 @@ class TurnTracker(private val store: BlobStore = InMemoryBlobStore()) {
         val newBase = baseLines.toMutableList()
         var shift = 0
         var baseChanged = false
+        /** Replaces [removeLen] baseline lines at [pos] (already shifted) with [insert]. */
+        fun editBaseline(pos: Int, removeLen: Int, insert: List<String>) {
+            repeat(removeLen) { newBase.removeAt(pos) }
+            newBase.addAll(pos, insert)
+            shift += insert.size - removeLen
+            baseChanged = true
+        }
         for (h in ownHunks) {
-            if (touchesAgentHunk(h, agentHunks)) {
+            val inserted = newLines.subList(h.bStart, h.bStart + h.bLen)
+            if (!touchesAgentHunk(h, agentHunks)) {
+                editBaseline(mapToBaseline(h.aStart, agentHunks, insert = h.aLen == 0) + shift, h.aLen, inserted)
+                continue
+            }
+            // The edit overlaps lines the agent wrote. The part on those lines is the user's (owned); any part of the
+            // edit outside them is an ordinary edit and goes into the baseline.
+            val outside = linesOutsideAgentHunks(h, agentHunks)
+            if (outside.isEmpty()) {
                 owned = owned + (h.bStart until h.bStart + h.bLen)
-            } else {
-                val pos = mapToBaseline(h.aStart, agentHunks) + shift
-                repeat(h.aLen) { newBase.removeAt(pos) }
-                newBase.addAll(pos, newLines.subList(h.bStart, h.bStart + h.bLen))
-                shift += h.bLen - h.aLen
-                baseChanged = true
+                continue
+            }
+            outside.forEachIndexed { i, (from, to) ->
+                editBaseline(mapToBaseline(from, agentHunks, insert = false) + shift, to - from, if (i == 0) inserted else emptyList())
             }
         }
         state.owned = owned
@@ -190,9 +214,26 @@ class TurnTracker(private val store: BlobStore = InMemoryBlobStore()) {
         if (h.aLen > 0) agentHunks.any { it.bLen > 0 && h.aStart < it.bStart + it.bLen && it.bStart < h.aStart + h.aLen }
         else agentHunks.any { it.bLen > 0 && it.bStart < h.aStart && h.aStart < it.bStart + it.bLen }
 
-    /** Maps a line position in the current text, outside any agent hunk, to the same position in the baseline. */
-    private fun mapToBaseline(p: Int, agentHunks: List<Hunk>): Int =
-        p + agentHunks.filter { it.bStart + it.bLen <= p && !(it.bLen == 0 && it.bStart == p) }.sumOf { it.aLen - it.bLen }
+    /** The parts of the replaced range [h] (old-text lines) that lie outside every agent-written region, as [from, to) pairs. */
+    private fun linesOutsideAgentHunks(h: Hunk, agentHunks: List<Hunk>): List<Pair<Int, Int>> {
+        val end = h.aStart + h.aLen
+        val out = ArrayList<Pair<Int, Int>>()
+        var p = h.aStart
+        for (a in agentHunks.filter { it.bLen > 0 }.sortedBy { it.bStart }) {
+            if (a.bStart + a.bLen <= p || a.bStart >= end) continue
+            if (a.bStart > p) out.add(p to a.bStart)
+            p = a.bStart + a.bLen
+        }
+        if (p < end) out.add(p to end)
+        return out
+    }
+
+    /**
+     * Maps a line position in the current text, outside any agent hunk, to the same position in the baseline.
+     * An [insert] goes in front of lines the agent deleted at that spot; an edit of the line at [p] goes after them.
+     */
+    private fun mapToBaseline(p: Int, agentHunks: List<Hunk>, insert: Boolean): Int =
+        p + agentHunks.filter { it.bStart + it.bLen <= p && !(insert && it.bLen == 0 && it.bStart == p) }.sumOf { it.aLen - it.bLen }
 
     /** Carries line indexes across a text change: lines inside a changed region are dropped, others shift. */
     private fun remap(owned: Set<Int>, hunks: List<Hunk>): Set<Int> {
@@ -215,9 +256,10 @@ class TurnTracker(private val store: BlobStore = InMemoryBlobStore()) {
     fun turnChanges(path: String): List<LineChange> {
         val s = files[path] ?: return emptyList()
         if (s.baseline == s.current) return emptyList()
+        s.cache?.let { if (it.baseline == s.baseline && it.current == s.current && it.owned == s.owned) return it.changes }
         val base = linesOf(s.baseline?.let(store::get) ?: "")
         val cur = linesOf(s.current?.let(store::get) ?: "")
-        return LineDiff.hunks(base, cur).flatMap { h ->
+        val changes = LineDiff.hunks(base, cur).flatMap { h ->
             if (h.bLen == 0) return@flatMap listOf(LineChange(ChangeKind.DELETED, h.bStart, 0))
             val kind = if (h.aLen == 0) ChangeKind.ADDED else ChangeKind.MODIFIED
             // Split the hunk around lines the user has taken ownership of.
@@ -230,5 +272,7 @@ class TurnTracker(private val store: BlobStore = InMemoryBlobStore()) {
             }
             out
         }
+        s.cache = CachedChanges(s.baseline, s.current, s.owned, changes)
+        return changes
     }
 }
