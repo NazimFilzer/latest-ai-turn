@@ -17,6 +17,7 @@ import dev.latestaiturn.core.LineChange
 import dev.latestaiturn.hooks.HookScript
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -255,5 +256,20 @@ class TurnServiceIdeTest {
         } finally {
             runInEdtAndWait { EditorFactory.getInstance().releaseEditor(editor) }
         }
+    }
+
+    @Test
+    fun `only the tracked folders take part in tracking`() {
+        val src = Files.createDirectories(base.resolve("src")).resolve("A.txt")
+        val dep = Files.createDirectories(base.resolve("dep")).resolve("B.txt")
+        Files.writeString(src, "a\n")
+        Files.writeString(dep, "b\n")
+        runInEdtAndWait { VfsUtil.markDirtyAndRefresh(false, true, true, vfile(base)) }
+
+        runInEdtAndWait { svc.setTrackedFolders(listOf("src")) }
+
+        waitFor("src file tracked") { svc.tracker.isTracked(src.toString()) }
+        assertFalse(svc.tracker.isTracked(dep.toString()))
+        assertFalse(svc.tracker.isTracked(main.toString()))
     }
 }

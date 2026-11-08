@@ -26,6 +26,7 @@ import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
@@ -41,6 +42,7 @@ import com.intellij.util.Alarm
 import com.intellij.util.concurrency.AppExecutorUtil
 import dev.latestaiturn.core.DiskBlobStore
 import dev.latestaiturn.core.TrackerSnapshot
+import dev.latestaiturn.core.TrackingScope
 import dev.latestaiturn.core.TurnTracker
 import dev.latestaiturn.core.sha256
 import dev.latestaiturn.signals.SignalKind
@@ -128,6 +130,14 @@ class TurnService(val project: Project) : Disposable {
     /** Turn End: refresh the project from disk first so the agent's last writes are still counted. */
     fun manualEnd() = endAfterRefresh(null)
 
+    /** Changes which folders are tracked: files outside them are forgotten, and the rest are scanned again. */
+    fun setTrackedFolders(folders: List<String>) {
+        TrackedFolders.set(project, folders)
+        tracker.trackedPaths().filter { !TrackingScope.contains(it, basePath, folders) }.forEach(tracker::forget)
+        ApplicationManager.getApplication().executeOnPooledThread { reconcile() }
+        scheduleRefresh()
+    }
+
     fun rebaseline() {
         tracker.rebaseline()
         turnStateChanged()
@@ -156,6 +166,7 @@ class TurnService(val project: Project) : Disposable {
 
     private fun endAfterRefresh(sessionId: String?) {
         val ending = tracker.activeTurn() ?: return
+        if (sessionId != null && ending.sessionId != sessionId) return
         val roots = ProjectRootManager.getInstance(project).contentRoots
         val finish = Runnable {
             ApplicationManager.getApplication().invokeLater({
@@ -165,7 +176,9 @@ class TurnService(val project: Project) : Disposable {
                 turnStateChanged()
             }, ModalityState.any())
         }
-        LocalFileSystem.getInstance().refreshFiles(roots.asList(), true, true, finish)
+        // Stop can arrive before the file watcher reports the final writes. Refresh even clean roots.
+        val dirtyRoots = VfsUtil.markDirty(true, true, *roots)
+        LocalFileSystem.getInstance().refreshFiles(dirtyRoots, true, true, finish)
     }
 
     private fun turnStateChanged() {

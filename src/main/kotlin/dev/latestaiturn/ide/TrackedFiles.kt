@@ -5,6 +5,7 @@ import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.fileEditor.impl.LoadTextUtil
 import com.intellij.openapi.vfs.VirtualFile
+import dev.latestaiturn.core.TrackingScope
 
 /** Decides which files take part in turn tracking, and reads their text the way the editor sees it. */
 object TrackedFiles {
@@ -22,6 +23,7 @@ object TrackedFiles {
         val base = project.basePath ?: return false
         val path = file.path
         if (!path.startsWith("$base/")) return false
+        if (!TrackingScope.contains(path, base, TrackedFolders.get(project))) return false
         if (path.removePrefix("$base/").split('/').any { it in EXCLUDED_DIRS }) return false
         if (file.length > MAX_BYTES || file.fileType.isBinary) return false
         if (!ProjectFileIndex.getInstance(project).isInContent(file)) return false

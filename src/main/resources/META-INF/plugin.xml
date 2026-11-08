@@ -37,6 +37,8 @@
       <action id="LatestAiTurn.ToggleHighlights" class="dev.latestaiturn.ide.ToggleHighlightsAction" text="Show Latest Turn Highlights"/>
       <action id="LatestAiTurn.ToggleBackground" class="dev.latestaiturn.ide.ToggleBackgroundAction" text="Highlight Changed Lines Background"/>
       <separator/>
+      <action id="LatestAiTurn.TrackedFolders" class="dev.latestaiturn.ide.SetTrackedFoldersAction" text="Set Tracked Folders…"
+              description="Track only these folders (for example src). Empty means the whole project."/>
       <action id="LatestAiTurn.InstallHooks" class="dev.latestaiturn.ide.InstallHooksAction" text="Install Agent Hooks…"/>
       <action id="LatestAiTurn.UninstallHooks" class="dev.latestaiturn.ide.UninstallHooksAction" text="Uninstall Agent Hooks…"/>
     </group>

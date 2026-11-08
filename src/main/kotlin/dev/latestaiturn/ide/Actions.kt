@@ -97,3 +97,25 @@ object TurnDiff {
         DiffManager.getInstance().showDiff(project, chain, DiffDialogHints.DEFAULT)
     }
 }
+
+/** Asks which folders to track, relative to the project root. Empty means the whole project. */
+class SetTrackedFoldersAction : TurnAction() {
+    override fun perform(project: Project, e: AnActionEvent) {
+        val current = dev.latestaiturn.core.TrackingScope.format(TrackedFolders.get(project))
+        val input = Messages.showInputDialog(
+            project,
+            "Folders to track, relative to the project root, separated by commas.\n" +
+                "Leave empty to track the whole project. Example: src",
+            "Tracked Folders",
+            Messages.getQuestionIcon(),
+            current,
+            null,
+        ) ?: return
+        val folders = dev.latestaiturn.core.TrackingScope.parse(input)
+        TurnService.getInstance(project).setTrackedFolders(folders)
+        TurnService.getInstance(project).notify(
+            "Tracking " + (if (folders.isEmpty()) "the whole project." else folders.joinToString(", ") + "."),
+        )
+    }
+}
+
