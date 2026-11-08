@@ -22,6 +22,7 @@ import com.intellij.openapi.editor.event.EditorFactoryListener
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileDocumentManagerListener
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.util.Disposer
@@ -29,6 +30,8 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapi.vfs.VfsUtilCore
+import com.intellij.openapi.vfs.VirtualFileVisitor
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileContentChangeEvent
 import com.intellij.openapi.vfs.newvfs.events.VFileCopyEvent
@@ -76,22 +79,26 @@ class TurnService(val project: Project) : Disposable {
     private val refreshAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
     private val notifyAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
     @Volatile private var dirty = false
+    private val pressureSave = AtomicBoolean(false)
     @Volatile private var lastEndMillis = 0L
     private var foreignCount = 0
 
     var highlightsEnabled: Boolean
         get() = PropertiesComponent.getInstance().getBoolean(PREF_HIGHLIGHTS, true)
-        set(v) { PropertiesComponent.getInstance().setValue(PREF_HIGHLIGHTS, v, true); scheduleRefresh() }
+        set(v) { PropertiesComponent.getInstance().setValue(PREF_HIGHLIGHTS, v, true); refreshAllProjects() }
 
     var backgroundEnabled: Boolean
         get() = PropertiesComponent.getInstance().getBoolean(PREF_BACKGROUND, true)
-        set(v) { PropertiesComponent.getInstance().setValue(PREF_BACKGROUND, v, true); scheduleRefresh() }
+        set(v) { PropertiesComponent.getInstance().setValue(PREF_BACKGROUND, v, true); refreshAllProjects() }
 
     // ---------- lifecycle ----------
 
+    // Loaded here, not in start(): the spool watcher can hand this project a Turn Signal before start() has run,
+    // and restoring saved state afterwards would wipe that turn.
+    init { if (basePath.isNotEmpty()) loadState() }
+
     fun start() {
         if (!started.compareAndSet(false, true) || basePath.isEmpty()) return
-        loadState()
         val bus = project.messageBus.connect(this)
         bus.subscribe(VirtualFileManager.VFS_CHANGES, object : BulkFileListener {
             override fun after(events: List<VFileEvent>) = onVfsEvents(events)
@@ -203,6 +210,18 @@ class TurnService(val project: Project) : Disposable {
         tracker.onOwnEdit(path, doc.immutableCharSequence.toString())
         dirty = true
         scheduleRefresh()
+        saveEarlyIfMuchPending()
+    }
+
+    /**
+     * Every keystroke leaves a copy of the whole file in the blob store's memory until the next save prunes it. In a
+     * very large file that adds up quickly, so save (which prunes) sooner once too much is waiting.
+     */
+    private fun saveEarlyIfMuchPending() {
+        if (blobs.pendingChars() < PENDING_CHARS_LIMIT || scanning || !pressureSave.compareAndSet(false, true)) return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try { persistNow() } finally { pressureSave.set(false) }
+        }
     }
 
     // ---------- external changes ----------
@@ -245,48 +264,52 @@ class TurnService(val project: Project) : Disposable {
     }
 
     private fun ideCreated(file: VirtualFile): Boolean {
-        if (file.isDirectory) {
-            var any = false
-            com.intellij.openapi.vfs.VfsUtilCore.visitChildrenRecursively(file, object : com.intellij.openapi.vfs.VirtualFileVisitor<Unit>() {
-                override fun visitFile(f: VirtualFile): Boolean { if (!f.isDirectory) any = absorbFromIde(f) || any; return true }
-            })
-            return any
-        }
+        if (file.isDirectory) return anyFileIn(file, ::absorbFromIde)
         return absorbFromIde(file)
+    }
+
+    /** Runs [handle] on every file below [dir] (not on folders); true if it returned true for any of them. */
+    private fun anyFileIn(dir: VirtualFile, handle: (VirtualFile) -> Boolean): Boolean {
+        var any = false
+        VfsUtilCore.visitChildrenRecursively(dir, object : VirtualFileVisitor<Unit>() {
+            override fun visitFile(f: VirtualFile): Boolean { if (!f.isDirectory) any = handle(f) || any; return true }
+        })
+        return any
     }
 
     private fun absorbFromIde(file: VirtualFile): Boolean {
         val path = file.path
         if (!path.startsWith("$basePath/")) return false
-        if (!tracker.isTracked(path) && !TrackedFiles.isEligible(project, file)) return false
+        if (!TrackedFiles.isEligible(project, file)) return dropIfTracked(path)
         val text = TrackedFiles.readText(file) ?: return false
         if (tracker.isTracked(path)) tracker.onOwnEdit(path, text) else tracker.seedIfAbsent(path, text)
         return true
     }
 
+    /** A file that is no longer trackable (now git-ignored, over the size limit, outside the tracked folders) is forgotten. */
+    private fun dropIfTracked(path: String): Boolean {
+        if (!tracker.isTracked(path)) return false
+        tracker.forget(path)
+        return true
+    }
+
     private fun ideDeleted(path: String): Boolean {
-        val gone = tracker.trackedPaths().filter { it == path || it.startsWith("$path/") }
+        val gone = tracker.pathsUnder(path)
         gone.forEach(tracker::forget)
         return gone.isNotEmpty()
     }
 
     private fun ideMoved(oldPath: String, newPath: String): Boolean {
-        if (tracker.trackedPaths().none { it == oldPath || it.startsWith("$oldPath/") }) return false
+        if (tracker.pathsUnder(oldPath).isEmpty()) return false
         tracker.move(oldPath, newPath)
         return true
     }
 
     private fun external(file: VirtualFile, created: Boolean): Boolean {
-        if (file.isDirectory) {
-            var any = false
-            com.intellij.openapi.vfs.VfsUtilCore.visitChildrenRecursively(file, object : com.intellij.openapi.vfs.VirtualFileVisitor<Unit>() {
-                override fun visitFile(f: VirtualFile): Boolean { if (!f.isDirectory) any = external(f, true) || any; return true }
-            })
-            return any
-        }
+        if (file.isDirectory) return anyFileIn(file) { external(it, true) }
         val path = file.path
         if (!path.startsWith("$basePath/")) return false
-        if (!tracker.isTracked(path) && !TrackedFiles.isEligible(project, file)) return false
+        if (!TrackedFiles.isEligible(project, file)) return dropIfTracked(path) // ignored, too big or out of scope by now
         val text = TrackedFiles.readText(file) ?: return false
         val mtime = TrackedFiles.changeTime(file)
         if (!tracker.isTracked(path) && !created) { tracker.seedIfAbsent(path, text); return true }
@@ -296,7 +319,7 @@ class TurnService(val project: Project) : Disposable {
     }
 
     private fun deleted(path: String): Boolean {
-        val gone = tracker.trackedPaths().filter { it == path || it.startsWith("$path/") }
+        val gone = tracker.pathsUnder(path)
         gone.forEach {
             countForeign(System.currentTimeMillis())
             tracker.onExternalChange(it, null, System.currentTimeMillis())
@@ -354,6 +377,17 @@ class TurnService(val project: Project) : Disposable {
                 }
             }
             for (p in tracker.trackedPaths() - seen) if (!Files.exists(Path.of(p))) { tracker.forget(p); offline++ }
+            // Files that still exist but are no longer trackable (now ignored, too big, ...). Only trust the answer when
+            // the scan found something: early in startup the content index can still be empty, and that would wipe everything.
+            if (candidates.isNotEmpty()) {
+                val leftovers = ReadAction.compute<List<String>, RuntimeException> {
+                    (tracker.trackedPaths() - seen).filter { p ->
+                        val vf = LocalFileSystem.getInstance().findFileByPath(p)
+                        vf != null && !TrackedFiles.isEligible(project, vf)
+                    }
+                }
+                leftovers.forEach(tracker::forget)
+            }
             blobs.flush()
             scanning = false
             dirty = true
@@ -382,6 +416,8 @@ class TurnService(val project: Project) : Disposable {
 
     private fun persistIfDirty() { if (dirty && !scanning) persistNow() }
 
+    /** Synchronized: dispose() and the periodic save can overlap, and both write the same temp file. */
+    @Synchronized
     fun persistNow() {
         dirty = false
         try {
@@ -398,6 +434,12 @@ class TurnService(val project: Project) : Disposable {
     }
 
     // ---------- painting ----------
+
+    private fun refreshAllProjects() {
+        for (p in ProjectManager.getInstance().openProjects) {
+            if (!p.isDisposed) p.getServiceIfCreated(TurnService::class.java)?.scheduleRefresh()
+        }
+    }
 
     fun scheduleRefresh() {
         refreshAlarm.cancelAllRequests()
@@ -424,6 +466,7 @@ class TurnService(val project: Project) : Disposable {
     companion object {
         const val PREF_HIGHLIGHTS = "latestaiturn.highlights"
         const val PREF_BACKGROUND = "latestaiturn.background"
+        private const val PENDING_CHARS_LIMIT = 16_000_000L
         fun getInstance(project: Project): TurnService = project.service()
     }
 }

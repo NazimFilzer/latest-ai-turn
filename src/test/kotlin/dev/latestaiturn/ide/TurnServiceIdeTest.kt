@@ -174,6 +174,19 @@ class TurnServiceIdeTest {
         waitFor("turn ended from hook") { svc.tracker.activeTurn() == null }
         assertEquals(1, changes(main).size)
         assertEquals(0, Files.list(spool).use { it.filter { f -> f.fileName.toString().endsWith(".json") }.count() }.toInt())
+        // payloads hold prompt text: the spool folder must be private to this user
+        assertEquals("rwx------", java.nio.file.attribute.PosixFilePermissions.toString(Files.getPosixFilePermissions(spool)))
+    }
+
+    @Test
+    fun `a tracked file that grows past the size limit is forgotten instead of highlighted forever`() {
+        runInEdtAndWait { svc.manualStart() }
+        assertTrue(svc.tracker.isTracked(other.toString()))
+
+        agentWrites(other, "x".repeat(TrackedFiles.MAX_BYTES.toInt() + 10) + "\n")
+
+        waitFor("oversized file forgotten") { !svc.tracker.isTracked(other.toString()) }
+        assertFalse(svc.tracker.changedPaths().contains(other.toString()))
     }
 
     @Test
@@ -271,5 +284,28 @@ class TurnServiceIdeTest {
         waitFor("src file tracked") { svc.tracker.isTracked(src.toString()) }
         assertFalse(svc.tracker.isTracked(dep.toString()))
         assertFalse(svc.tracker.isTracked(main.toString()))
+    }
+
+    @Test
+    fun `typing in a very large file does not pile up unsaved copies of it and loses nothing`() {
+        val big = base.resolve("Big.txt")
+        Files.writeString(big, (1..20_000).joinToString("\n", postfix = "\n") { "line $it of the big file, padding padding" })
+        runInEdtAndWait { VfsUtil.markDirtyAndRefresh(false, false, false, vfile(big)) }
+        waitFor("big file tracked") { svc.tracker.isTracked(big.toString()) }
+        runInEdtAndWait { svc.manualStart() }
+        lateinit var doc: com.intellij.openapi.editor.Document
+        runInEdtAndWait { doc = FileDocumentManager.getInstance().getDocument(vfile(big))!! }
+
+        val blobs = TurnService::class.java.getDeclaredField("blobs").also { it.isAccessible = true }.get(svc) as dev.latestaiturn.core.DiskBlobStore
+        var peak = 0L
+        repeat(100) {
+            runInEdtAndWait { WriteCommandAction.runWriteCommandAction(fixture.project) { doc.insertString(0, "k") } }
+            peak = maxOf(peak, blobs.pendingChars())
+        }
+
+        // Without the early save, 100 keystrokes would leave about 170 million characters waiting (two copies each)
+        // until the 5-second timer; with it the pile-up stays near the 16 million limit.
+        assertTrue("unsaved text piled up: peak $peak characters", peak < 60_000_000)
+        waitFor("tracker text equals the document") { svc.tracker.currentText(big.toString()) == doc.text } // a pruned-away blob would read as null
     }
 }
