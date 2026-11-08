@@ -21,7 +21,9 @@
       <add-to-group group-id="ToolsMenu" anchor="last"/>
       <action id="LatestAiTurn.Start" class="dev.latestaiturn.ide.StartTurnAction" text="Start Turn"
               description="Begin a turn: changes on disk from now on are highlighted">
-        <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift T"/>
+        <!-- Only on the Mac keymaps: the default (Windows/Linux) keymap already binds ctrl alt shift T to "Refactor This". -->
+        <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="ctrl alt shift T"/>
+        <keyboard-shortcut keymap="Mac OS X" first-keystroke="ctrl alt shift T"/>
       </action>
       <action id="LatestAiTurn.End" class="dev.latestaiturn.ide.EndTurnAction" text="End Turn"
               description="End the turn; its highlights stay until the next turn starts">
