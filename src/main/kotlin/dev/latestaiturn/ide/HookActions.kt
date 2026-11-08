@@ -20,6 +20,8 @@ import javax.swing.JComponent
 /** One agent's hook config file and how to add or remove our hooks in it. */
 private class HookTarget(
     val name: String,
+    val app: String,
+    val startEvent: String,
     val configFile: Path,
     val install: (String?, String) -> String,
     val uninstall: (String?) -> String,
@@ -35,16 +37,18 @@ fun anyHooksInstalled(): Boolean = targets().any { t -> runCatching { t.isInstal
 private fun targets(): List<HookTarget> {
     val home = PluginPaths.home()
     return listOf(
-        HookTarget("Claude Code (desktop app, CLI and T3 Code)", home.resolve(".claude/settings.json"),
+        HookTarget("Claude Code (desktop app, CLI and T3 Code)", "claude", "UserPromptSubmit", home.resolve(".claude/settings.json"),
             { c, s -> HookInstaller.installClaudeStyle(c, s, "claude") }, HookInstaller::uninstallClaudeStyle, HookInstaller::isInstalledClaudeStyle),
-        HookTarget("Codex (desktop app, CLI and T3 Code)", home.resolve(".codex/hooks.json"),
+        HookTarget("Codex (desktop app, CLI and T3 Code)", "codex", "UserPromptSubmit", home.resolve(".codex/hooks.json"),
             { c, s -> HookInstaller.installClaudeStyle(c, s, "codex") }, HookInstaller::uninstallClaudeStyle, HookInstaller::isInstalledClaudeStyle),
-        HookTarget("Antigravity (best effort)", home.resolve(".gemini/config/hooks.json"),
+        HookTarget("Antigravity (best effort)", "antigravity", "PreInvocation", home.resolve(".gemini/config/hooks.json"),
             { c, s -> HookInstaller.installAntigravity(c, s) }, HookInstaller::uninstallAntigravity, HookInstaller::isInstalledAntigravity),
     )
 }
 
-private fun backupAndWrite(target: Path, content: String) {
+private fun backupAndWrite(configFile: Path, content: String) {
+    // A settings file that is a symlink (dotfiles repo) must stay one: write through to the real file.
+    val target = if (Files.isSymbolicLink(configFile)) runCatching { configFile.toRealPath() }.getOrDefault(configFile) else configFile
     Files.createDirectories(target.parent)
     if (Files.exists(target)) {
         var backup = target.resolveSibling(target.fileName.toString() + ".latest-ai-turn.bak")
@@ -76,10 +80,10 @@ class InstallHooksAction : TurnAction() {
                 preview.text = all.indices.filter { boxes[it].isSelected }.joinToString("\n\n") { i ->
                     val t = all[i]
                     val state = if (t.existing() == null) "will be created" else "exists; a backup copy is made, nothing is removed"
-                    "${t.configFile}  ($state)\n" + when (i) {
-                        2 -> "  adds hook \"latest-ai-turn\": PreInvocation -> sh '$script' antigravity start\n                           Stop -> sh '$script' antigravity end"
-                        else -> "  adds UserPromptSubmit -> sh '$script' ${if (i == 0) "claude" else "codex"} start\n  adds Stop             -> sh '$script' ${if (i == 0) "claude" else "codex"} end"
-                    }
+                    val block = if (t.app == "antigravity") " in hook block \"latest-ai-turn\"" else ""
+                    "${t.configFile}  ($state)\n" +
+                        "  adds ${t.startEvent}$block -> ${HookInstaller.command(script, t.app, "start")}\n" +
+                        "  adds Stop$block -> ${HookInstaller.command(script, t.app, "end")}"
                 }.ifEmpty { "Nothing selected." }
             }
 

@@ -15,7 +15,7 @@ object HookInstaller {
     private const val ANTIGRAVITY_BLOCK = "latest-ai-turn"
     private val gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
 
-    private fun command(script: String, app: String, event: String) = "sh '$script' $app $event"
+    fun command(script: String, app: String, event: String) = "sh '$script' $app $event"
 
     private fun parse(existing: String?): JsonObject {
         if (existing.isNullOrBlank()) return JsonObject()
@@ -110,8 +110,12 @@ object HookScript {
 # Copies the hook payload from stdin into the spool directory, then prints the minimal reply the agent expects.
 app="${'$'}1"
 event="${'$'}2"
+umask 077  # payloads contain prompt text: readable by this user only
 dir="${'$'}{LATEST_AI_TURN_SPOOL:-${'$'}HOME/.latest-ai-turn/spool}"
 mkdir -p "${'$'}dir" 2>/dev/null
+chmod 700 "${'$'}dir" 2>/dev/null
+# the IDE deletes signals as it reads them; if it is closed, do not let old prompts pile up (it drops them after 10 minutes anyway)
+find "${'$'}dir" -type f \( -name '*.json' -o -name '*.tmp' \) -mmin +10 -delete 2>/dev/null
 tmp="${'$'}dir/.${'$'}app-${'$'}event-${'$'}${'$'}.tmp"
 cat > "${'$'}tmp" 2>/dev/null
 mv "${'$'}tmp" "${'$'}dir/${'$'}app-${'$'}event-${'$'}(date +%s)-${'$'}${'$'}.json" 2>/dev/null
