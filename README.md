@@ -132,7 +132,7 @@ What *was* run for real: the hook script itself (real `sh`, real spool, real par
 
 ## Where things are stored
 
-* `<IDE system dir>/latest-ai-turn/<project-hash>/` — `state.json` + `blobs/` (baseline copies). Safe to delete; the plugin re-scans.
+* `<IDE system dir>/latest-ai-turn/<project-hash>/` — `state.json` + `blobs/` (baseline copies). Safe to delete; the plugin re-scans. Unreferenced baseline copies and leftover `.tmp` files older than 10 minutes are removed at project open and then every 10 minutes while the project is open. A project folder is deleted at IDE start when its project directory no longer exists and it has not been saved for 30 days (folders saved by older versions have no `project.txt` and are kept until their project is opened again). **Uninstalling the plugin deletes the whole `latest-ai-turn` folder** (every project). Closing a project does not, because the turn must survive an IDE restart. The uninstall hook is `PluginInstaller.addStateListener`; it is covered only by a unit test of the deletion, *not yet exercised in a real IDE uninstall*. Run **Uninstall Agent Hooks…** before uninstalling; `~/.latest-ai-turn/` is never deleted automatically, because your agents' hook entries still point at it.
 * `~/.latest-ai-turn/hook.sh`, `~/.latest-ai-turn/spool/` — only if you install hooks (the spool is emptied as signals are read; signals older than 10 minutes are dropped).
 
 ## Code map

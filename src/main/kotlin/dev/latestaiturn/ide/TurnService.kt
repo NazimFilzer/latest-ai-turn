@@ -82,6 +82,8 @@ class TurnService(val project: Project) : Disposable {
     private val pressureSave = AtomicBoolean(false)
     @Volatile private var lastEndMillis = 0L
     private var foreignCount = 0
+    private var lastGcMillis = System.currentTimeMillis() // the scan at startup runs the first gc
+    private var markerWritten = false
 
     var highlightsEnabled: Boolean
         get() = PropertiesComponent.getInstance().getBoolean(PREF_HIGHLIGHTS, true)
@@ -420,6 +422,7 @@ class TurnService(val project: Project) : Disposable {
     @Synchronized
     fun persistNow() {
         dirty = false
+        if (StoredData.uninstalled) return // the plugin was uninstalled: its data was deleted and must stay deleted
         try {
             val mark = blobs.mark()
             val snapshot = tracker.snapshot()
@@ -428,6 +431,12 @@ class TurnService(val project: Project) : Disposable {
             val tmp = dir.resolve("state.json.tmp")
             Files.writeString(tmp, Gson().toJson(snapshot))
             Files.move(tmp, dir.resolve("state.json"), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            if (!markerWritten) { Files.writeString(dir.resolve(StoredData.MARKER), basePath); markerWritten = true }
+            // superseded baselines pile up in a long session; the scan at startup is not enough
+            if (System.currentTimeMillis() - lastGcMillis > GC_INTERVAL_MILLIS) {
+                lastGcMillis = System.currentTimeMillis()
+                blobs.gc(snapshot.files.flatMapTo(HashSet()) { listOfNotNull(it.baseline, it.current) })
+            }
         } catch (e: Exception) {
             log.warn("Latest AI Turn: could not save state", e)
         }
@@ -467,6 +476,7 @@ class TurnService(val project: Project) : Disposable {
         const val PREF_HIGHLIGHTS = "latestaiturn.highlights"
         const val PREF_BACKGROUND = "latestaiturn.background"
         private const val PENDING_CHARS_LIMIT = 16_000_000L
+        private const val GC_INTERVAL_MILLIS = 10 * 60_000L
         fun getInstance(project: Project): TurnService = project.service()
     }
 }

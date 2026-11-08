@@ -85,14 +85,22 @@ class DiskBlobStore(private val dir: Path) : BlobStore {
         }
     }
 
-    /** Deletes blobs no file refers to any more. Recently written blobs are kept: they may belong to a newer snapshot. */
+    /**
+     * Deletes blobs no file refers to any more, and temp files left behind by a crash mid-write. Recently written
+     * files are kept: they may belong to a newer snapshot or an in-flight [flush].
+     */
     fun gc(referenced: Set<String>) {
         val cutoff = System.currentTimeMillis() - GC_GRACE_MILLIS
         try {
-            Files.newDirectoryStream(dir, "*.txt").use { stream ->
+            Files.newDirectoryStream(dir).use { stream ->
                 for (p in stream) {
-                    val hash = p.fileName.toString().removeSuffix(".txt")
-                    if (hash !in referenced && !pending.containsKey(hash) && Files.getLastModifiedTime(p).toMillis() < cutoff) Files.deleteIfExists(p)
+                    val name = p.fileName.toString()
+                    val orphan = when {
+                        name.endsWith(".txt") -> name.removeSuffix(".txt").let { it !in referenced && !pending.containsKey(it) }
+                        name.endsWith(".tmp") -> true
+                        else -> false
+                    }
+                    if (orphan && Files.getLastModifiedTime(p).toMillis() < cutoff) Files.deleteIfExists(p)
                 }
             }
         } catch (e: Exception) {

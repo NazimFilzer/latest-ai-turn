@@ -5,6 +5,8 @@ import com.intellij.openapi.startup.ProjectActivity
 
 class Startup : ProjectActivity {
     override suspend fun execute(project: Project) {
+        StoredData.watchUninstall()
+        StoredData.pruneAbandonedOnce()
         TurnService.getInstance(project).start()
     }
 }

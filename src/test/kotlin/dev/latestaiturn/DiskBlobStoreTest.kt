@@ -2,7 +2,9 @@ package dev.latestaiturn
 
 import dev.latestaiturn.core.DiskBlobStore
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Files
 
@@ -55,5 +57,26 @@ class DiskBlobStoreTest {
         store.flush(keep = setOf(b), upTo = store.mark()) // "12345" is dropped, "abc" is written
         assertEquals(0L, store.pendingChars())
         assertEquals("abc", store.get(b))
+    }
+
+    @Test
+    fun `gc removes old unreferenced blobs and stale temp files but keeps referenced and recent ones`() {
+        val dir = Files.createTempDirectory("blobs")
+        val store = DiskBlobStore(dir)
+        val old = java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() - 11 * 60_000)
+        fun file(name: String, aged: Boolean) = Files.writeString(dir.resolve(name), "x").also { if (aged) Files.setLastModifiedTime(it, old) }
+        val kept = file("kept.txt", aged = true)
+        val orphan = file("orphan.txt", aged = true)
+        val recentOrphan = file("recent.txt", aged = false)
+        val staleTmp = file("crash.tmp", aged = true)
+        val freshTmp = file("inflight.tmp", aged = false)
+
+        store.gc(referenced = setOf("kept"))
+
+        assertTrue(Files.exists(kept))
+        assertFalse(Files.exists(orphan))
+        assertTrue(Files.exists(recentOrphan))
+        assertFalse(Files.exists(staleTmp))
+        assertTrue(Files.exists(freshTmp))
     }
 }
