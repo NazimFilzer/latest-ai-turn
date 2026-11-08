@@ -12,8 +12,12 @@ import java.util.concurrent.ConcurrentHashMap
  * text in memory and [flush] writes pending blobs, so typing never waits on the disk.
  */
 class DiskBlobStore(private val dir: Path) : BlobStore {
+    // pending, seqs and pendingChars change together, so every change to them holds [lock]. Without it a prune running
+    // on another thread could see a blob that [put] has stored but not yet stamped, and drop it.
+    private val lock = Any()
     private val pending = ConcurrentHashMap<String, String>()
-    private val seqs = ConcurrentHashMap<String, Long>()
+    private val seqs = HashMap<String, Long>()
+    private var pendingChars = 0L
     private val counter = java.util.concurrent.atomic.AtomicLong()
     private val cache: MutableMap<String, String> = Collections.synchronizedMap(
         object : LinkedHashMap<String, String>(64, 0.75f, true) {
@@ -29,10 +33,15 @@ class DiskBlobStore(private val dir: Path) : BlobStore {
 
     override fun put(text: String): String {
         val hash = sha256(text)
-        if (!pending.containsKey(hash)) pending[hash] = text
-        seqs[hash] = counter.incrementAndGet()
+        synchronized(lock) {
+            if (!pending.containsKey(hash)) { pending[hash] = text; pendingChars += text.length }
+            seqs[hash] = counter.incrementAndGet()
+        }
         return hash
     }
+
+    /** How much text is waiting in memory for the next [flush]; lets the caller save early when it grows large. */
+    fun pendingChars(): Long = synchronized(lock) { pendingChars }
 
     /** A point in time: blobs put after this are never dropped by a [flush] that was prepared before it. */
     fun mark(): Long = counter.get()
@@ -54,9 +63,9 @@ class DiskBlobStore(private val dir: Path) : BlobStore {
      * snapshot that produced [keep] is never lost. Safe to call from any thread.
      */
     fun flush(keep: Set<String>? = null, upTo: Long = 0) {
-        if (keep != null) {
+        if (keep != null) synchronized(lock) {
             for (hash in pending.keys.toList()) {
-                if (hash !in keep && (seqs[hash] ?: 0) <= upTo) { pending.remove(hash); seqs.remove(hash) }
+                if (hash !in keep && (seqs[hash] ?: 0) <= upTo) { pendingChars -= pending.remove(hash)?.length ?: 0; seqs.remove(hash) }
             }
         }
         for ((hash, text) in pending.entries.toList()) {
@@ -67,7 +76,9 @@ class DiskBlobStore(private val dir: Path) : BlobStore {
                     Files.write(tmp, text.toByteArray(StandardCharsets.UTF_8))
                     Files.move(tmp, f, StandardCopyOption.REPLACE_EXISTING)
                 }
-                pending.remove(hash, text)
+                synchronized(lock) {
+                    if (pending.remove(hash, text)) { pendingChars -= text.length; seqs.remove(hash) } // on disk now; the stamp is no longer needed
+                }
             } catch (e: Exception) {
                 // keep it pending; the next flush retries
             }
