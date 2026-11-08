@@ -18,8 +18,8 @@ Requires IntelliJ IDEA **2026.2 or newer** (build 262+). The plugin is built aga
 # JDK: use the IDE's own JBR (Java 25). Gradle 9.6 wrapper is included.
 export JAVA_HOME="/Applications/IntelliJ IDEA.app/Contents/jbr/Contents/Home"
 
-./gradlew test            # 41 tests: pure model, parser, installer, plus a headless-IDE integration suite
-./gradlew buildPlugin     # -> build/distributions/latest-ai-turn-0.1.0.zip
+./gradlew test            # 56 tests: pure model, parser, installer, plus a headless-IDE integration suite
+./gradlew buildPlugin     # -> build/distributions/latest-ai-turn-1.1.zip
 ```
 
 Then **Settings → Plugins → ⚙ → Install Plugin from Disk…** and pick the zip.
@@ -33,7 +33,7 @@ To see it without touching your real IDE: `./gradlew runIde -PdemoProject=/path/
 
 | Action | Shortcut | What it does |
 |---|---|---|
-| Start Turn | ⌃⌥⇧T | Saves editors, freezes the baseline. Everything that changes on disk from now on is the turn's. |
+| Start Turn | ⌃⌥⇧T (Mac keymaps only; the Windows/Linux default keymap already uses it for *Refactor This*) | Saves editors, freezes the baseline. Everything that changes on disk from now on is the turn's. |
 | End Turn | ⌃⌥⇧E | Refreshes the project from disk first (so the agent's last writes count), then closes the turn. Highlights stay. |
 | Re-baseline | | Absorbs everything: current contents become the baseline. Escape hatch. |
 | Set Tracked Folders… | | Track only these folders, relative to the project root, e.g. `src`. Empty means the whole project. |
@@ -53,7 +53,7 @@ Manual mode alone is complete: press Start, let the agent work, press End.
 | Codex (desktop, CLI, T3 Code) | `~/.codex/hooks.json` | `UserPromptSubmit` | `Stop` |
 | Antigravity (best effort) | `~/.gemini/config/hooks.json` | `PreInvocation` | `Stop` with `fullyIdle: true` |
 
-Each hook runs `~/.latest-ai-turn/hook.sh`, a small POSIX `sh` script that copies the hook payload into `~/.latest-ai-turn/spool/` and prints the minimal reply the agent expects (`{}`; Antigravity's `Stop` gets `{"decision":"allow"}`). It never changes agent behavior. The plugin polls the spool every 250 ms. **Codex asks you to approve a new hook once** (Settings → Hooks). Restart running agent sessions after installing.
+Each hook runs `~/.latest-ai-turn/hook.sh`, a small POSIX `sh` script that copies the hook payload into `~/.latest-ai-turn/spool/` and prints the minimal reply the agent expects (`{}`; Antigravity's `Stop` gets `{"decision":"allow"}`). It never changes agent behavior. It makes the spool folder private to you (`umask 077`) and deletes leftover signals older than 10 minutes. After updating the plugin, run **Install Agent Hooks…** again to get the newest script. The plugin polls the spool every 250 ms. **Codex asks you to approve a new hook once** (Settings → Hooks). Restart running agent sessions after installing.
 
 ## How turns work (semantics)
 
@@ -121,6 +121,7 @@ What *was* run for real: the hook script itself (real `sh`, real spool, real par
 * **Spool is consumed by the first IDE that polls it;** two IDE instances on the same machine race. Signals are matched to projects by the agent's working directory (inside the project, or a parent that is not your home dir or `/`), so T3 / Codex worktrees outside the project directory are ignored.
 * **Unsaved editor text vs an agent write.** IntelliJ's own behavior applies: a file with unsaved edits that an agent also writes triggers IntelliJ's conflict handling, and an IDE save landing after the agent's write overwrites it. Hook-started turns save all editors *right after* the turn starts (saving cannot happen on the signal path itself), which narrows but does not close that window. Manual Start saves first.
 * **Large file events run on the EDT.** The VFS listener reads and diffs changed files on the UI thread (inside IntelliJ's refresh). A branch switch touching many large files can briefly freeze the UI. End Turn forces a refresh of the content roots to catch writes that the file watcher has not reported yet. Moving this off the EDT would change the ordering between reloads and edits, so it was left as is.
+* **Very large files.** Near the 1 MB limit, each keystroke costs about 2 ms and allocates about 17 MB of short-lived memory (it re-reads the file as lines). Unsaved copies of the text are kept in memory until the next save, which happens every 5 seconds or earlier once about 16 million characters are waiting. Typical source files cost well under 1 ms per keystroke.
 * **Whole-file rewrites.** The line diff stops searching for a minimal diff after 1500 edits and reports one big region.
 * **Line-based.** A change that only differs in the final newline is not highlighted; line-ending-only changes are normalized away. Highlights while the *first scan* of a brand-new project is running may be missing for files not yet scanned.
 * **Not covered:** moving a directory in/out of the project via refresh, content roots outside the project directory, multi-window attribution of one agent to several projects with different `cwd`s.
