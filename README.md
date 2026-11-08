@@ -142,3 +142,7 @@ What *was* run for real: the hook script itself (real `sh`, real spool, real par
 * `hooks/` — add-only JSON installer and the relay script.
 * `ide/` — `TurnService` (VFS/document/signal glue, persistence), `TurnPaint` (markup), actions, status widget, hook install UI, spool watcher.
 * `src/test/` — model/parser/installer tests and `TurnServiceIdeTest`, which runs a real project in a headless IDE and drives the real hook script.
+
+## License
+
+Apache License 2.0. See [`LICENSE`](LICENSE).
