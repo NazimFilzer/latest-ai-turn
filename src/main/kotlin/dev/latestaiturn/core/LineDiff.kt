@@ -44,7 +44,8 @@ object LineDiff {
         val trace = ArrayList<IntArray>()
         var found = -1
         search@ for (d in 0..cap) {
-            trace.add(v.copyOf())
+            // Step d only ever reads diagonals -d-1..d+1, so keep just that slice: vv[k + d + 1] == v[off + k].
+            trace.add(v.copyOfRange(off - d - 1, off + d + 2))
             for (k in -d..d step 2) {
                 var x = if (k == -d || (k != d && v[off + k - 1] < v[off + k + 1])) v[off + k + 1] else v[off + k - 1] + 1
                 var y = x - k
@@ -60,9 +61,10 @@ object LineDiff {
         var y = m
         for (d in found downTo 1) {
             val vv = trace[d]
+            val w = d + 1
             val k = x - y
-            val prevK = if (k == -d || (k != d && vv[off + k - 1] < vv[off + k + 1])) k + 1 else k - 1
-            val prevX = vv[off + prevK]
+            val prevK = if (k == -d || (k != d && vv[w + k - 1] < vv[w + k + 1])) k + 1 else k - 1
+            val prevX = vv[w + prevK]
             val prevY = prevX - prevK
             while (x > prevX && y > prevY) { x--; y--; matches.add(x to y) }
             x = prevX
